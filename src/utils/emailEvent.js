@@ -1,15 +1,10 @@
-import jwt from "jsonwebtoken";
-import sendEmail,{subject} from "./sendEmail.js";
-import {signUp} from "./signUp.js";
+import createOTP from "./createOTP.js";
+import sendOTPEmail from "./sendOTPEmail.js";
+
 import eventEmitter from "events";
-const emailEvent = new eventEmitter();
-emailEvent.on("sendEmail", function(email, username){
-   const token = jwt.sign({ email }, process.env.JWT_SECRET);
-    const link = `${BASE_URL}/auth/activateAccount/${token}`;
-    sendEmail({
-      to: email,
-      subject: subject.activateAccount,
-      html: signUp(username, link),
-    });
-})
-export default emailEvent;
+const OTPEvent = new eventEmitter();
+OTPEvent.on("sendOtp", async function (email, purpose = "verification") {
+  const otp = await createOTP(email, purpose);
+  await sendOTPEmail(email, otp, purpose);
+});
+export default OTPEvent;

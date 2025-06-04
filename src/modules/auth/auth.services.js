@@ -1,16 +1,22 @@
+import OTP from "../../DB/models/otp.js";
 import userModel from "../../DB/models/user.model.js";
 import { AppError } from "../../utils/appError.js";
-import emailEvent from "../../utils/emailEvent.js";
+import OTPEvent from "../../utils/emailEvent.js";
 import { compareHash } from "../../utils/hashing.js";
 import { generateTokens, verifyToken } from "../../utils/token.js";
 export const register = async (req, res, next) => {
-  const user = await userModel.create(req.body);
-  emailEvent.emit("sendEmail", req.body.email, req.body.username);
+  const { email } = req.body;
+  let user = await userModel.findOne({ email });
+  if (user && user.isVerified) {
+    throw new AppError("User already exists and verified", 409);
+  }
+  const userDoc = await userModel.create(req.body);
+  OTPEvent.emit("sendOtp", email);
   return res.status(201).json({
     success: true,
     message:
       "User created successfully, check your email to activate your account",
-    data: user,
+    data: userDoc,
   });
 };
 
@@ -24,7 +30,7 @@ export const login = async (req, res, next) => {
   if (!isMatch) {
     throw new AppError("invalid email or password", 400);
   }
-  if (!user.isActive) {
+  if (!user.isVerified) {
     throw new AppError("please activate your account first", 409);
   }
   if (user.isDelete) {
@@ -32,22 +38,17 @@ export const login = async (req, res, next) => {
   }
   // const token = generateToken({payload:{id: user._id, email}});
   const { accessToken, refreshToken } = generateTokens(user);
-  res.cookie("refreshToken", refreshToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-  });
   return res.status(201).json({
     success: true,
     message: "successfully logged in",
-    token: accessToken,
+    accessToken,
+    refreshToken,
   });
 };
 
 export const activateAccount = async (req, res, next) => {
   const { token } = req.params;
-  const { email } = verifyToken({ token });
+  const { email } = verifyToken({ token, secretKey: process.env.JWT_SECRET });
   const user = await userModel.findOne({ email });
   if (!user) {
     throw new AppError("user not found, please register first", 409);
@@ -61,12 +62,13 @@ export const activateAccount = async (req, res, next) => {
 };
 
 export const refreshToken = async (req, res, next) => {
-  const { refreshToken } = req.cookies;
+  const { refreshToken } = req.body;
   if (!refreshToken) {
     throw new AppError("refresh token required", 401);
   }
-  const decode = verifyToken(refreshToken, process.env.JWT_REFRESH_SECRET);
-  const user = await userModel.findById(decode._id);
+  const decode = verifyToken({ token: refreshToken, secretKey: process.env.JWT_REFRESH_SECRET });
+  const user = await userModel.findById(decode.id);
+
   if (!user && user.tokenVersion !== decode.tokenVersion) {
     throw new AppError("Invalid refresh token", 403);
   }
@@ -82,9 +84,93 @@ export const logOut = async (req, res, next) => {
   const user = await userModel.findByIdAndUpdate(req.user._id, {
     $inc: { tokenVersion: 1 },
   });
-  // Clear refresh token cookie
-  res.clearCookie("refreshToken");
+
   return res
     .status(200)
     .json({ success: true, message: "logged out successfully" });
+};
+
+export const verifyOtp = async (req, res, next) => {
+  const { email, otp, purpose = "verification" } = req.body;
+  const otpDoc = await OTP.findOne({
+    email,
+    purpose,
+    isUsed: false,
+    expiresAt: { $gt: new Date() },
+  }).sort({ createdAt: -1 });
+  if (!otpDoc) throw new AppError("invalid OTP, please request a new one");
+  if (otpDoc.attempts >= 3) {
+    await OTP.deleteOne({ id: otpDoc._id });
+    throw new AppError("Too many attempts. Please request a new OTP.", 400);
+  }
+  if (otpDoc.otp !== otp) {
+    otpDoc.attempts += 1;
+    await otpDoc.save();
+    return res.status(400).json({
+      message: "Invalid OTP",
+      attemptsLeft: 3 - otpDoc.attempts,
+    });
+  }
+  otpDoc.isUsed = true;
+  await otpDoc.save();
+  if (purpose === "verification") {
+    await userModel.findOneAndUpdate({ email }, { isVerified: true });
+    res.json({
+      success: true,
+      message: "Account verified successfully",
+    });
+  } else if (purpose === "password_reset") {
+    res.json({
+      success: true,
+      message: "OTP verified. You can now reset your password.",
+      resetToken: otpDoc._id, // You can use this for password reset
+    });
+  }
+};
+
+export const resendOTP = async (req, res, next) => {
+  const { email, purpose = "verification" } = req.body;
+  const user = await userModel.findOne({ email });
+  if (!user) throw new AppError("user not found", 404);
+  if (purpose === "verification" && user.isVerified) {
+    throw new AppError("user already verified", 400);
+  }
+  OTPEvent.emit("sendOtp", email);
+  res.json({
+    success: true,
+    message: "OTP resent successfully",
+  });
+};
+
+export const forgetPassword = async (req, res, next) => {
+  const { email } = req.body;
+  const user = await userModel.findOne({ email });
+  if (!user) throw new AppError("user not found", 404);
+  OTPEvent.emit("sendOtp", email, "password_reset");
+  return res.status(200).json({
+    success: true,
+    message: "OTP send successfully, check your email ",
+  });
+};
+
+export const resetPassword = async (req, res, next) => {
+  const { email, newPassword, resetToken } = req.body;
+  const otpDoc = await OTP.findOne({
+    email,
+    _id: resetToken,
+    isUsed: true,
+    purpose: "password_reset",
+  });
+  if (!otpDoc) throw new AppError("OTP not found", 404);
+  const user = await userModel.findOneAndUpdate(
+    { email },
+    { $set: { password: newPassword } }
+  );
+  // Delete the used OTP
+  await OTP.deleteOne({ _id: resetToken });
+
+  res.json({
+    success: true,
+    message: "Password reset successful",
+  });
 };

@@ -3,7 +3,7 @@ import { decrypt } from "../../utils/encryption.js";
 import { AppError } from "../../utils/appError.js";
 import { compareHash } from "../../utils/hashing.js";
 import EmailChangeRequest from "../../DB/models/emailChangeRequest.js";
-import sendEmail, { subject } from "../../utils/sendEmail.js";
+import sendEmail, { subject } from "../../utils/sendOTPEmail.js";
 import { changeEmail } from "../../utils/changeEmail.js";
 import crypto from "crypto";
 export const profile = async (req, res, next) => {

@@ -33,13 +33,15 @@ import { AppError } from "../utils/appError.js";
 
   // Handle JWT errors
   if (err.name === "JsonWebTokenError") {
-    error = new AppError("Invalid token. Please log in again.", 401);
+    error = new AppError(`Invalid token. Please log in again. ${err.message}`, 401);
   }
 
   if (err.name === "TokenExpiredError") {
     error = new AppError("Your token has expired. Please log in again.", 401);
   }
 
+  // Log error details in development mode
+  console.error("ERROR 💥", err);
   // Send error response
   res.status(error.statusCode || 500).json({
     status: error.status || "error",

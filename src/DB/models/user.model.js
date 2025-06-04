@@ -42,7 +42,7 @@ const userSchema = new Schema(
       type: String,
       enum: Object.values(genders),
     },
-    isActive: {
+    isVerified: {
       type: Boolean,
       default: false,
     },
